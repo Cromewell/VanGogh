@@ -61,3 +61,13 @@ Choose a local image folder or enter a search keyword, pick a timer duration, an
 | `F11` | Fullscreen |
 | `F1` | Help |
 | `Escape` | Close |
+
+## Mouse Controls
+
+| Input | Action |
+|-------|--------|
+| Scroll wheel | Zoom in / out, centered on cursor |
+| Left drag | Pan image |
+| Double-click (fit) | Zoom to 2× at cursor position |
+| Double-click (zoomed) | Fit image to window |
+| Right drag | Shift grid overlay offset |
