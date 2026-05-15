@@ -62,6 +62,7 @@ class DrawingSession(tk.Toplevel):
         self.canvas.bind("<Configure>", self.on_resize)
 
         self.canvas.bind("<ButtonPress-1>", self.start_pan)
+        self.canvas.bind("<Double-Button-1>", self.on_double_click)
         self.canvas.bind("<B1-Motion>", self.pan)
         self.canvas.bind("<ButtonPress-3>", self.start_grid_pan)
         self.canvas.bind("<B3-Motion>", self.grid_pan)
@@ -238,8 +239,12 @@ class DrawingSession(tk.Toplevel):
         if self.is_bw:
             resized_img = resized_img.convert("L")
 
-        resized_img = ImageEnhance.Brightness(resized_img).enhance(self.brightness_val.get())
-        resized_img = ImageEnhance.Contrast(resized_img).enhance(self.contrast_val.get())
+        b = self.brightness_val.get()
+        if b != 1.0:
+            resized_img = ImageEnhance.Brightness(resized_img).enhance(b)
+        c = self.contrast_val.get()
+        if c != 1.0:
+            resized_img = ImageEnhance.Contrast(resized_img).enhance(c)
 
         self.photo = ImageTk.PhotoImage(resized_img)
 
@@ -286,20 +291,18 @@ class DrawingSession(tk.Toplevel):
         ratio = 1.1 if (event.num == 4 or event.delta > 0) else 0.909090909
         self.scale *= ratio
 
-        if self.img_container:
-            self.canvas.coords(self.img_container, self.img_x, self.img_y)
-
         if hasattr(self, "_zoom_job_fast"): self.after_cancel(self._zoom_job_fast)
         if hasattr(self, "_zoom_job_slow"): self.after_cancel(self._zoom_job_slow)
 
-        self._zoom_job_fast = self.after(20, lambda: self.render_image(resample=Image.Resampling.BILINEAR))
-        self._zoom_job_slow = self.after(400, self.render_image)
+        # ~1 frame at 60fps: gives the event loop a paint window between scroll events
+        self._zoom_job_fast = self.after(16, lambda: self.render_image(resample=Image.Resampling.NEAREST))
+        self._zoom_job_slow = self.after(300, self.render_image)
 
     def on_adj_change(self, _):
         if hasattr(self, "_adj_job_fast"): self.after_cancel(self._adj_job_fast)
         if hasattr(self, "_adj_job_slow"): self.after_cancel(self._adj_job_slow)
 
-        self._adj_job_fast = self.after(20, lambda: self.render_image(resample=Image.Resampling.BILINEAR))
+        self._adj_job_fast = self.after(16, lambda: self.render_image(resample=Image.Resampling.NEAREST))
         self._adj_job_slow = self.after(400, self.render_image)
 
     def toggle_ui(self):
@@ -387,6 +390,21 @@ class DrawingSession(tk.Toplevel):
                 self.restart_timer()
             except Exception as e:
                 messagebox.showerror("Fehler", f"Nächstes Bild konnte nicht geladen werden:\n{e}", parent=self)
+
+    def on_double_click(self, event):
+        for job in ("_zoom_job_fast", "_zoom_job_slow"):
+            if hasattr(self, job):
+                self.after_cancel(getattr(self, job))
+
+        if self.scale == 1.0:
+            ratio = 2.0
+            self.img_x = event.x - (event.x - self.img_x) * ratio
+            self.img_y = event.y - (event.y - self.img_y) * ratio
+            self.scale = ratio
+        else:
+            self.scale = 1.0
+
+        self.render_image()
 
     def start_pan(self, event):
         self.pan_last_x, self.pan_last_y = event.x, event.y
