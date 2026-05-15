@@ -2,7 +2,7 @@
 
 A drawing practice app built with PySide6.
 
-Load reference images from a local folder or pull random ones from the web, set a countdown timer, and draw. The interface stays out of your way — controls auto-hide and reappear when you move the mouse.
+Load a random reference image from a local folder or pull random ones from the web, set a countdown timer, and draw. The interface stays out of your way — controls auto-hide and reappear when you move the mouse.
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![PySide6](https://img.shields.io/badge/PySide6-6.x-green)
 
