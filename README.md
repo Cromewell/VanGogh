@@ -1,6 +1,6 @@
 # VanGogh
 
-A gesture drawing practice app built with PySide6.
+A drawing practice app built with PySide6.
 
 Load reference images from a local folder or pull random ones from the web, set a countdown timer, and draw. The interface stays out of your way — controls auto-hide and reappear when you move the mouse.
 
