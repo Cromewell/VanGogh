@@ -714,12 +714,15 @@ _TIMER_OPTIONS = [
 
 class App(QWidget):
     def __init__(self):
+        global _font_base
         super().__init__()
         self.setWindowTitle("VanGogh")
-        self.setFixedSize(622, 520)
         self.timer_seconds = 0
         self._timer_btns   = {}
         self.recent        = _load_recent()
+        _font_base = self.recent.get("font_base", 15)
+        QApplication.instance().setStyleSheet(_make_style(_font_base))
+        self.setFixedSize(int(622 * _font_base / 15), int(520 * _font_base / 15))
         self._build_ui()
         s = QApplication.primaryScreen().geometry()
         self.move((s.width() - self.width()) // 2, (s.height() - self.height()) // 2)
@@ -732,10 +735,16 @@ class App(QWidget):
         # Header
         hdr = QHBoxLayout()
         t = QLabel("VanGogh")
-        t.setStyleSheet("font-size:28px; font-weight:bold;")
+        t.setStyleSheet(f"font-size:{_font_base+13}px; font-weight:bold;")
         sub = QLabel("Drawing Sessions")
-        sub.setStyleSheet("font-size:15px; color:#555; padding-top:6px; padding-left:10px;")
+        sub.setStyleSheet(f"font-size:{_font_base}px; color:#555; padding-top:6px; padding-left:10px;")
         hdr.addWidget(t); hdr.addWidget(sub); hdr.addStretch()
+        for label, delta in [("A−", -1), ("A+", 1)]:
+            b = QPushButton(label)
+            b.setFixedSize(30, 24)
+            b.setStyleSheet("font-size:11px; color:#444; background:#1a1a1a; border-radius:3px; padding:0;")
+            b.clicked.connect(lambda _, d=delta: self._change_font(d))
+            hdr.addWidget(b)
         root.addLayout(hdr)
         root.addSpacing(16)
         root.addWidget(self._hdiv())
@@ -743,7 +752,7 @@ class App(QWidget):
 
         # Timer chips
         lbl = QLabel("TIMER")
-        lbl.setStyleSheet("font-size:13px; font-weight:bold; color:#555;")
+        lbl.setStyleSheet(f"font-size:{_font_base-2}px; font-weight:bold; color:#555;")
         root.addWidget(lbl)
         chips = QHBoxLayout()
         chips.setSpacing(3)
@@ -751,7 +760,7 @@ class App(QWidget):
         for label, secs in _TIMER_OPTIONS:
             b = QPushButton(label)
             b.setCheckable(True)
-            b.setFixedHeight(30)
+            b.setFixedHeight(int(_font_base * 2))
             b.clicked.connect(lambda _, s=secs, l=label: self._select_timer(s, l))
             chips.addWidget(b)
             self._timer_btns[label] = b
@@ -776,7 +785,7 @@ class App(QWidget):
 
         self.info_lbl = QLabel("")
         self.info_lbl.setAlignment(Qt.AlignCenter)
-        self.info_lbl.setStyleSheet("font-size:14px; color:#555;")
+        self.info_lbl.setStyleSheet(f"font-size:{_font_base-1}px; color:#555;")
         root.addWidget(self.info_lbl)
 
     def _local_col(self) -> QWidget:
@@ -784,9 +793,9 @@ class App(QWidget):
         w.setStyleSheet("background:#1e1e1e; border-radius:6px;")
         v = QVBoxLayout(w); v.setContentsMargins(18,16,18,16); v.setSpacing(7)
         h = QLabel("Lokaler Ordner")
-        h.setStyleSheet("font-size:16px; font-weight:bold; background:transparent;")
+        h.setStyleSheet(f"font-size:{_font_base+1}px; font-weight:bold; background:transparent;")
         s = QLabel("Referenzbilder vom Dateisystem")
-        s.setStyleSheet("font-size:14px; color:#555; background:transparent;")
+        s.setStyleSheet(f"font-size:{_font_base-1}px; color:#555; background:transparent;")
         b = QPushButton("Ordner wählen…")
         b.setObjectName("accent_blue"); b.clicked.connect(self.open_local)
         self._rf = QVBoxLayout()
@@ -801,9 +810,9 @@ class App(QWidget):
         w.setStyleSheet("background:#1e1e1e; border-radius:6px;")
         v = QVBoxLayout(w); v.setContentsMargins(18,16,18,16); v.setSpacing(7)
         h = QLabel("Web-Suche")
-        h.setStyleSheet("font-size:16px; font-weight:bold; background:transparent;")
+        h.setStyleSheet(f"font-size:{_font_base+1}px; font-weight:bold; background:transparent;")
         s = QLabel("loremflickr.com")
-        s.setStyleSheet("font-size:14px; color:#555; background:transparent;")
+        s.setStyleSheet(f"font-size:{_font_base-1}px; color:#555; background:transparent;")
         self.search = QLineEdit()
         self.search.setPlaceholderText("Suchbegriff…")
         self.search.returnPressed.connect(self.open_web)
@@ -834,7 +843,16 @@ class App(QWidget):
     def _info(self, text: str, error=False):
         self.info_lbl.setText(text)
         self.info_lbl.setStyleSheet(
-            f"font-size:14px; color:{'#ff4444' if error else '#555'};")
+            f"font-size:{_font_base-1}px; color:{'#ff4444' if error else '#555'};")
+
+    def _change_font(self, delta: int):
+        global _font_base
+        _font_base = max(11, min(24, _font_base + delta))
+        self.recent["font_base"] = _font_base
+        _save_recent(self.recent)
+        new_win = App()
+        new_win.show()
+        self.close()
 
     def _refresh_folders(self):
         while self._rf.count():
@@ -842,7 +860,7 @@ class App(QWidget):
             if w: w.deleteLater()
         for folder in self.recent.get("folders", []):
             b = QPushButton(f"↩  {os.path.basename(folder) or folder}")
-            b.setStyleSheet("font-size:12px; color:#555; text-align:left; padding:2px 4px;")
+            b.setStyleSheet(f"font-size:{_font_base-3}px; color:#555; text-align:left; padding:2px 4px;")
             b.clicked.connect(lambda _, f=folder: self._open_folder(f))
             self._rf.addWidget(b)
 
@@ -852,7 +870,7 @@ class App(QWidget):
             if w: w.deleteLater()
         for kw in self.recent.get("keywords", []):
             b = QPushButton(f"↩  {kw}")
-            b.setStyleSheet("font-size:12px; color:#555; text-align:left; padding:2px 4px;")
+            b.setStyleSheet(f"font-size:{_font_base-3}px; color:#555; text-align:left; padding:2px 4px;")
             b.clicked.connect(lambda _, k=kw: self._start_web(k))
             self._rk.addWidget(b)
 
@@ -902,31 +920,35 @@ class App(QWidget):
 
 
 # ── Global stylesheet ─────────────────────────────────────────────────────────
-_STYLE = """
-QWidget { background:#111111; color:#f0f0f0;
-          font-family:"Helvetica Neue","Helvetica","Arial","Segoe UI",sans-serif; }
-QPushButton { background:#2a2a2a; color:#aaa; border:none;
-              border-radius:4px; padding:5px 10px; font-size:15px; }
-QPushButton:hover   { background:#3a3a3a; color:#f0f0f0; }
-QPushButton:checked { background:#1a3a5c; color:#4a9eff; }
-QPushButton#accent_blue   { background:#4a9eff; color:#fff;
-                             font-weight:bold; padding:8px; }
-QPushButton#accent_blue:hover  { background:#3a8ef0; }
-QPushButton#accent_orange { background:#ff6b35; color:#fff;
-                             font-weight:bold; padding:8px; }
-QPushButton#accent_orange:hover { background:#ef5b25; }
-QLineEdit { background:#2a2a2a; border:1px solid #3a3a3a;
-            border-radius:4px; padding:6px; font-size:15px; }
-QLineEdit:focus { border-color:#4a9eff; }
-QSlider::groove:horizontal { background:#2a2a2a; height:4px; border-radius:2px; }
-QSlider::handle:horizontal { background:#4a9eff; width:12px; height:12px;
-                              margin:-4px 0; border-radius:6px; }
-QSlider::sub-page:horizontal { background:#4a9eff; border-radius:2px; }
+_font_base = 15
+
+def _make_style(sz: int) -> str:
+    return f"""
+QWidget {{ background:#111111; color:#f0f0f0;
+          font-family:"Helvetica Neue","Helvetica","Arial","Segoe UI",sans-serif; }}
+QPushButton {{ background:#2a2a2a; color:#aaa; border:none;
+              border-radius:4px; padding:5px 10px; font-size:{sz}px; }}
+QPushButton:hover   {{ background:#3a3a3a; color:#f0f0f0; }}
+QPushButton:checked {{ background:#1a3a5c; color:#4a9eff; }}
+QPushButton#accent_blue   {{ background:#4a9eff; color:#fff;
+                             font-weight:bold; padding:8px; }}
+QPushButton#accent_blue:hover  {{ background:#3a8ef0; }}
+QPushButton#accent_orange {{ background:#ff6b35; color:#fff;
+                             font-weight:bold; padding:8px; }}
+QPushButton#accent_orange:hover {{ background:#ef5b25; }}
+QLineEdit {{ background:#2a2a2a; border:1px solid #3a3a3a;
+            border-radius:4px; padding:6px; font-size:{sz}px; }}
+QLineEdit:focus {{ border-color:#4a9eff; }}
+QSlider::groove:horizontal {{ background:#2a2a2a; height:4px; border-radius:2px; }}
+QSlider::handle:horizontal {{ background:#4a9eff; width:12px; height:12px;
+                              margin:-4px 0; border-radius:6px; }}
+QSlider::sub-page:horizontal {{ background:#4a9eff; border-radius:2px; }}
 """
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setStyleSheet(_STYLE)
+    _font_base = _load_recent().get("font_base", 15)
+    app.setStyleSheet(_make_style(_font_base))
     w = App()
     w.show()
     sys.exit(app.exec())
