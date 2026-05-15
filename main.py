@@ -42,6 +42,108 @@ def _push_recent(data, key, value, limit=5):
     lst.insert(0, value)
     data[key] = lst[:limit]
 
+# ── Translations ─────────────────────────────────────────────────────────────
+_LANG = "en"
+_TR: dict[str, dict[str, str]] = {
+    "en": {
+        "subtitle":        "Drawing Sessions",
+        "timer_lbl":       "TIMER",
+        "off":             "Off",
+        "custom":          "Custom",
+        "local_title":     "Local Folder",
+        "local_sub":       "Reference images from filesystem",
+        "local_btn":       "Choose folder…",
+        "web_title":       "Web Search",
+        "web_placeholder": "Search term…",
+        "web_btn":         "Search",
+        "choose_folder":   "Choose folder",
+        "no_images":       "No images found.",
+        "images":          "images",
+        "enter_keyword":   "Please enter a search term.",
+        "loading":         "Loading…",
+        "loaded":          "loaded.",
+        "error":           "Error",
+        "minutes_lbl":     "Minutes:",
+        "timer_dlg":       "Timer",
+        "adjustments":     "Adjustments",
+        "brightness":      "Brightness",
+        "contrast":        "Contrast",
+        "reset":           "Reset",
+        "flip":            "Flip",
+        "grid":            "Grid",
+        "bw":              "B/W",
+        "adjust":          "Adjust",
+        "timeup":          "Time's up\n\nN → Next image     Space → Pause     T → Restart",
+        "load_error":      "Image could not be loaded:",
+        "next_error":      "Next image could not be loaded:",
+        "help_title":      "VanGogh – Shortcuts",
+        "help_body": (
+            "Space\t: Pause / Resume\n"
+            "T\t: Restart timer\n"
+            "N\t: Next image\n"
+            "R\t: Reset view\n"
+            "G\t: Toggle grid\n"
+            "+ / -\t: Grid density\n"
+            "F\t: Flip\n"
+            "B\t: Black & White\n"
+            "A\t: Adjustments\n"
+            "H\t: Show / hide UI\n"
+            "F11\t: Fullscreen\n"
+            "Esc\t: Close"
+        ),
+    },
+    "de": {
+        "subtitle":        "Zeichen-Sessions",
+        "timer_lbl":       "TIMER",
+        "off":             "Aus",
+        "custom":          "Eigene",
+        "local_title":     "Lokaler Ordner",
+        "local_sub":       "Referenzbilder vom Dateisystem",
+        "local_btn":       "Ordner wählen…",
+        "web_title":       "Web-Suche",
+        "web_placeholder": "Suchbegriff…",
+        "web_btn":         "Suchen",
+        "choose_folder":   "Ordner wählen",
+        "no_images":       "Keine Bilder gefunden.",
+        "images":          "Bilder",
+        "enter_keyword":   "Bitte Suchbegriff eingeben.",
+        "loading":         "Lade Bild …",
+        "loaded":          "geladen.",
+        "error":           "Fehler",
+        "minutes_lbl":     "Minuten:",
+        "timer_dlg":       "Timer",
+        "adjustments":     "Bildanpassungen",
+        "brightness":      "Helligkeit",
+        "contrast":        "Kontrast",
+        "reset":           "Zurücksetzen",
+        "flip":            "Flip",
+        "grid":            "Raster",
+        "bw":              "S/W",
+        "adjust":          "Anpassen",
+        "timeup":          "Zeit abgelaufen\n\nN → Nächstes Bild     Space → Pause     T → Neu starten",
+        "load_error":      "Bild konnte nicht geladen werden:",
+        "next_error":      "Nächstes Bild konnte nicht geladen werden:",
+        "help_title":      "VanGogh – Shortcuts",
+        "help_body": (
+            "Space\t: Pause / Resume\n"
+            "T\t: Timer neu starten\n"
+            "N\t: Nächstes Bild\n"
+            "R\t: Ansicht zurücksetzen\n"
+            "G\t: Raster an/aus\n"
+            "+ / -\t: Raster-Dichte\n"
+            "F\t: Spiegeln\n"
+            "B\t: Schwarz/Weiß\n"
+            "A\t: Anpassungen\n"
+            "H\t: UI ein/ausblenden\n"
+            "F11\t: Vollbild\n"
+            "Esc\t: Beenden"
+        ),
+    },
+}
+
+def _T(key: str) -> str:
+    return _TR.get(_LANG, _TR["en"]).get(key, key)
+
 # ── PIL → QPixmap ─────────────────────────────────────────────────────────────
 def _to_pixmap(img: Image.Image) -> QPixmap:
     if img.mode not in ("RGB", "RGBA"):
@@ -125,7 +227,7 @@ class AdjustPanel(QWidget):
 
         hdr_row = QHBoxLayout()
         hdr_row.setContentsMargins(0, 0, 0, 0)
-        hdr = QLabel("Bildanpassungen")
+        hdr = QLabel(_T("adjustments"))
         hdr.setStyleSheet("color:#888; font-size:10px; font-weight:bold;")
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(18, 18)
@@ -139,10 +241,10 @@ class AdjustPanel(QWidget):
         hdr_row.addWidget(close_btn)
         v.addLayout(hdr_row)
 
-        self._b_slider, _ = self._row("Helligkeit", v)
-        self._c_slider, _ = self._row("Kontrast",   v)
+        self._b_slider, _ = self._row(_T("brightness"), v)
+        self._c_slider, _ = self._row(_T("contrast"),   v)
 
-        rst = QPushButton("Zurücksetzen")
+        rst = QPushButton(_T("reset"))
         rst.clicked.connect(self.reset)
         v.addWidget(rst)
 
@@ -416,13 +518,13 @@ class SessionPill(QWidget):
         self._btn("⏭", self.sig_next, icon=True)
         self._sep()
 
-        self.flip_btn = self._btn("Flip",   self.sig_flip, checkable=True)
-        self.grid_btn = self._btn("Raster", self.sig_grid, checkable=True)
-        self.bw_btn   = self._btn("S/W",    self.sig_bw,   checkable=True)
+        self.flip_btn = self._btn(_T("flip"),   self.sig_flip, checkable=True)
+        self.grid_btn = self._btn(_T("grid"),   self.sig_grid, checkable=True)
+        self.bw_btn   = self._btn(_T("bw"),     self.sig_bw,   checkable=True)
         self._sep()
 
-        self._btn("Anpassen", self.sig_adjust)
-        self._btn("Reset",    self.sig_reset)
+        self._btn(_T("adjust"), self.sig_adjust)
+        self._btn(_T("reset"),  self.sig_reset)
 
     def _btn(self, text, sig=None, checkable=False, icon=False):
         b = QPushButton(text, self)
@@ -499,10 +601,7 @@ class DrawingSession(QMainWindow):
         self._zoom_timer.timeout.connect(self._zoom_lbl.hide)
 
         # Time-up overlay
-        self._timeup = QLabel(
-            "Zeit abgelaufen\n\n"
-            "N → Nächstes Bild     Space → Pause     T → Neu starten",
-            self.view)
+        self._timeup = QLabel(_T("timeup"), self.view)
         self._timeup.setAlignment(Qt.AlignCenter)
         self._timeup.setStyleSheet(
             "background:rgba(0,0,0,210); color:#f0f0f0;"
@@ -549,7 +648,7 @@ class DrawingSession(QMainWindow):
                 Image.open(data) if is_path else Image.open(BytesIO(data)))
             self.view.load_pil(img)
         except Exception as e:
-            QMessageBox.critical(self, "Fehler", f"Bild konnte nicht geladen werden:\n{e}")
+            QMessageBox.critical(self, _T("error"), f"{_T('load_error')}\n{e}")
 
     # ── Shortcuts ─────────────────────────────────────────────────────────────
     def _setup_shortcuts(self):
@@ -655,19 +754,7 @@ class DrawingSession(QMainWindow):
         self.showNormal() if self.isFullScreen() else self.showFullScreen()
 
     def _show_help(self):
-        QMessageBox.information(self, "VanGogh – Shortcuts",
-            "Space\t: Pause / Resume\n"
-            "T\t: Timer neu starten\n"
-            "N\t: Nächstes Bild\n"
-            "R\t: Ansicht zurücksetzen\n"
-            "G\t: Raster an/aus\n"
-            "+ / -\t: Raster-Dichte\n"
-            "F\t: Spiegeln\n"
-            "B\t: Schwarz/Weiß\n"
-            "A\t: Anpassungen\n"
-            "H\t: UI ein/ausblenden\n"
-            "F11\t: Vollbild\n"
-            "Esc\t: Beenden")
+        QMessageBox.information(self, _T("help_title"), _T("help_body"))
 
     # ── Preload / next ────────────────────────────────────────────────────────
     def _preload_next(self):
@@ -697,8 +784,7 @@ class DrawingSession(QMainWindow):
                 self._load(r.content, is_path=False)
                 self._do_restart()
             except Exception as e:
-                QMessageBox.critical(self, "Fehler",
-                    f"Nächstes Bild konnte nicht geladen werden:\n{e}")
+                QMessageBox.critical(self, _T("error"), f"{_T('next_error')}\n{e}")
 
     def closeEvent(self, event):
         self._tick_timer.stop()
@@ -714,13 +800,14 @@ _TIMER_OPTIONS = [
 
 class App(QWidget):
     def __init__(self):
-        global _font_base
+        global _font_base, _LANG
         super().__init__()
         self.setWindowTitle("VanGogh")
         self.timer_seconds = 0
         self._timer_btns   = {}
         self.recent        = _load_recent()
         _font_base = self.recent.get("font_base", 15)
+        _LANG      = self.recent.get("lang", "en")
         QApplication.instance().setStyleSheet(_make_style(_font_base))
         self.setFixedSize(int(622 * _font_base / 15), int(520 * _font_base / 15))
         self._build_ui()
@@ -736,9 +823,16 @@ class App(QWidget):
         hdr = QHBoxLayout()
         t = QLabel("VanGogh")
         t.setStyleSheet(f"font-size:{_font_base+13}px; font-weight:bold;")
-        sub = QLabel("Drawing Sessions")
+        sub = QLabel(_T("subtitle"))
         sub.setStyleSheet(f"font-size:{_font_base}px; color:#555; padding-top:6px; padding-left:10px;")
         hdr.addWidget(t); hdr.addWidget(sub); hdr.addStretch()
+        lang_other = "DE" if _LANG == "en" else "EN"
+        lb = QPushButton(lang_other)
+        lb.setFixedSize(30, 24)
+        lb.setStyleSheet("font-size:11px; color:#444; background:#1a1a1a; border-radius:3px; padding:0;")
+        lb.clicked.connect(lambda: self._change_lang(lang_other.lower()))
+        hdr.addWidget(lb)
+        hdr.addSpacing(4)
         for label, delta in [("A−", -1), ("A+", 1)]:
             b = QPushButton(label)
             b.setFixedSize(30, 24)
@@ -751,19 +845,20 @@ class App(QWidget):
         root.addSpacing(14)
 
         # Timer chips
-        lbl = QLabel("TIMER")
+        lbl = QLabel(_T("timer_lbl"))
         lbl.setStyleSheet(f"font-size:{_font_base-2}px; font-weight:bold; color:#555;")
         root.addWidget(lbl)
         chips = QHBoxLayout()
         chips.setSpacing(3)
         chips.setContentsMargins(0, 5, 0, 0)
-        for label, secs in _TIMER_OPTIONS:
+        for key, secs in _TIMER_OPTIONS:
+            label = _T("off") if key == "Off" else _T("custom") if key == "Custom" else key
             b = QPushButton(label)
             b.setCheckable(True)
             b.setFixedHeight(int(_font_base * 2))
-            b.clicked.connect(lambda _, s=secs, l=label: self._select_timer(s, l))
+            b.clicked.connect(lambda _, s=secs, k=key: self._select_timer(s, k))
             chips.addWidget(b)
-            self._timer_btns[label] = b
+            self._timer_btns[key] = b
         chips.addStretch()
         root.addLayout(chips)
         self._timer_btns["Off"].setChecked(True)
@@ -792,11 +887,11 @@ class App(QWidget):
         w = QWidget()
         w.setStyleSheet("background:#1e1e1e; border-radius:6px;")
         v = QVBoxLayout(w); v.setContentsMargins(18,16,18,16); v.setSpacing(7)
-        h = QLabel("Lokaler Ordner")
+        h = QLabel(_T("local_title"))
         h.setStyleSheet(f"font-size:{_font_base+1}px; font-weight:bold; background:transparent;")
-        s = QLabel("Referenzbilder vom Dateisystem")
+        s = QLabel(_T("local_sub"))
         s.setStyleSheet(f"font-size:{_font_base-1}px; color:#555; background:transparent;")
-        b = QPushButton("Ordner wählen…")
+        b = QPushButton(_T("local_btn"))
         b.setObjectName("accent_blue"); b.clicked.connect(self.open_local)
         self._rf = QVBoxLayout()
         self._rf.setSpacing(2)
@@ -809,14 +904,14 @@ class App(QWidget):
         w = QWidget()
         w.setStyleSheet("background:#1e1e1e; border-radius:6px;")
         v = QVBoxLayout(w); v.setContentsMargins(18,16,18,16); v.setSpacing(7)
-        h = QLabel("Web-Suche")
+        h = QLabel(_T("web_title"))
         h.setStyleSheet(f"font-size:{_font_base+1}px; font-weight:bold; background:transparent;")
         s = QLabel("loremflickr.com")
         s.setStyleSheet(f"font-size:{_font_base-1}px; color:#555; background:transparent;")
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Suchbegriff…")
+        self.search.setPlaceholderText(_T("web_placeholder"))
         self.search.returnPressed.connect(self.open_web)
-        b = QPushButton("Suchen")
+        b = QPushButton(_T("web_btn"))
         b.setObjectName("accent_orange"); b.clicked.connect(self.open_web)
         self._rk = QVBoxLayout()
         self._rk.setSpacing(2)
@@ -831,7 +926,7 @@ class App(QWidget):
 
     def _select_timer(self, seconds: int, label: str):
         if label == "Custom":
-            mins, ok = QInputDialog.getInt(self, "Timer", "Minuten:", 5, 1, 999)
+            mins, ok = QInputDialog.getInt(self, _T("timer_dlg"), _T("minutes_lbl"), 5, 1, 999)
             if not ok:
                 self._timer_btns["Custom"].setChecked(False); return
             seconds = mins * 60
@@ -844,6 +939,15 @@ class App(QWidget):
         self.info_lbl.setText(text)
         self.info_lbl.setStyleSheet(
             f"font-size:{_font_base-1}px; color:{'#ff4444' if error else '#555'};")
+
+    def _change_lang(self, lang: str):
+        global _LANG
+        _LANG = lang
+        self.recent["lang"] = lang
+        _save_recent(self.recent)
+        new_win = App()
+        new_win.show()
+        self.close()
 
     def _change_font(self, delta: int):
         global _font_base
@@ -876,7 +980,7 @@ class App(QWidget):
 
     def open_local(self):
         default = (self.recent.get("folders") or [os.path.expanduser("~/Pictures")])[0]
-        folder = QFileDialog.getExistingDirectory(self, "Ordner wählen", default)
+        folder = QFileDialog.getExistingDirectory(self, _T("choose_folder"), default)
         if folder:
             self._open_folder(folder)
 
@@ -886,24 +990,24 @@ class App(QWidget):
                  for dp, _, files in os.walk(folder)
                  for f in files if f.lower().endswith(exts)]
         if not paths:
-            self._info("Keine Bilder gefunden.", error=True); return
+            self._info(_T("no_images"), error=True); return
         _push_recent(self.recent, "folders", folder)
         _save_recent(self.recent)
         self._refresh_folders()
         selected = random.choice(paths)
-        self._info(f"{len(paths)} Bilder · {os.path.basename(selected)}")
+        self._info(f"{len(paths)} {_T('images')} · {os.path.basename(selected)}")
         DrawingSession(selected, self.timer_seconds,
                        is_path=True, source=paths, source_type="local").show()
 
     def open_web(self):
         kw = self.search.text().strip()
         if not kw:
-            self._info("Bitte Suchbegriff eingeben.", error=True); return
+            self._info(_T("enter_keyword"), error=True); return
         self._start_web(kw)
 
     def _start_web(self, keyword: str):
         self.search.setText(keyword)
-        self._info("Lade Bild …")
+        self._info(_T("loading"))
         QApplication.processEvents()
         try:
             r = requests.get(
@@ -912,11 +1016,11 @@ class App(QWidget):
             _push_recent(self.recent, "keywords", keyword)
             _save_recent(self.recent)
             self._refresh_keywords()
-            self._info(f"'{keyword}' geladen.")
+            self._info(f"'{keyword}' {_T('loaded')}")
             DrawingSession(r.content, self.timer_seconds,
                            is_path=False, source=keyword, source_type="web").show()
         except Exception as e:
-            self._info(f"Fehler: {e}", error=True)
+            self._info(f"{_T('error')}: {e}", error=True)
 
 
 # ── Global stylesheet ─────────────────────────────────────────────────────────
@@ -930,12 +1034,18 @@ QPushButton {{ background:#2a2a2a; color:#aaa; border:none;
               border-radius:4px; padding:5px 10px; font-size:{sz}px; }}
 QPushButton:hover   {{ background:#3a3a3a; color:#f0f0f0; }}
 QPushButton:checked {{ background:#1a3a5c; color:#4a9eff; }}
-QPushButton#accent_blue   {{ background:#4a9eff; color:#fff;
-                             font-weight:bold; padding:8px; }}
-QPushButton#accent_blue:hover  {{ background:#3a8ef0; }}
-QPushButton#accent_orange {{ background:#ff6b35; color:#fff;
-                             font-weight:bold; padding:8px; }}
-QPushButton#accent_orange:hover {{ background:#ef5b25; }}
+QPushButton#accent_blue   {{ background:#4a9eff; color:#fff; font-weight:bold;
+                             font-size:{sz+1}px; padding:10px 16px;
+                             border-radius:6px; border-bottom:3px solid #2a7de0; }}
+QPushButton#accent_blue:hover  {{ background:#3a8ef0; border-bottom-color:#1a6dd0; }}
+QPushButton#accent_blue:pressed {{ padding-top:12px; padding-bottom:8px;
+                                    border-bottom-width:1px; }}
+QPushButton#accent_orange {{ background:#ff6b35; color:#fff; font-weight:bold;
+                              font-size:{sz+1}px; padding:10px 16px;
+                              border-radius:6px; border-bottom:3px solid #d94f1a; }}
+QPushButton#accent_orange:hover  {{ background:#ef5b25; border-bottom-color:#c43f0a; }}
+QPushButton#accent_orange:pressed {{ padding-top:12px; padding-bottom:8px;
+                                      border-bottom-width:1px; }}
 QLineEdit {{ background:#2a2a2a; border:1px solid #3a3a3a;
             border-radius:4px; padding:6px; font-size:{sz}px; }}
 QLineEdit:focus {{ border-color:#4a9eff; }}
@@ -947,7 +1057,9 @@ QSlider::sub-page:horizontal {{ background:#4a9eff; border-radius:2px; }}
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    _font_base = _load_recent().get("font_base", 15)
+    _recent_boot = _load_recent()
+    _font_base = _recent_boot.get("font_base", 15)
+    _LANG      = _recent_boot.get("lang", "en")
     app.setStyleSheet(_make_style(_font_base))
     w = App()
     w.show()
