@@ -1,591 +1,932 @@
 #!/usr/bin/python3
-
-import tkinter as tk
-from tkinter import filedialog, simpledialog, messagebox
-import os
-import time
-import random
+import sys, os, random, json
 from urllib.parse import quote
+from io import BytesIO
 
 import requests
-from io import BytesIO
-from PIL import Image, ImageTk, ImageEnhance
+from PIL import Image, ImageEnhance
 
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QMainWindow, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QSlider, QFileDialog, QMessageBox,
+    QInputDialog, QFrame, QGraphicsView, QGraphicsScene,
+    QLineEdit, QSizePolicy, QGraphicsPixmapItem,
+)
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QPoint, QSize
+from PySide6.QtGui import (
+    QPixmap, QImage, QPainter, QPen, QColor, QFont,
+    QTransform, QBrush, QShortcut, QKeySequence,
+)
 
-class DrawingSession(tk.Toplevel):
-    """A window that displays both the image and the timer."""
-    def __init__(self, image_data, seconds, is_path=True, source=None, source_type=None):
+# ── Persistence ───────────────────────────────────────────────────────────────
+_RECENT_FILE = os.path.expanduser("~/.vangogh_recent.json")
+
+def _load_recent():
+    try:
+        with open(_RECENT_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"folders": [], "keywords": []}
+
+def _save_recent(data):
+    try:
+        with open(_RECENT_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+def _push_recent(data, key, value, limit=5):
+    lst = data.setdefault(key, [])
+    if value in lst:
+        lst.remove(value)
+    lst.insert(0, value)
+    data[key] = lst[:limit]
+
+# ── PIL → QPixmap ─────────────────────────────────────────────────────────────
+def _to_pixmap(img: Image.Image) -> QPixmap:
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGB")
+    mode = img.mode
+    data = img.tobytes()
+    fmt  = QImage.Format_RGBA8888 if mode == "RGBA" else QImage.Format_RGB888
+    bpl  = img.width * (4 if mode == "RGBA" else 3)
+    return QPixmap.fromImage(QImage(data, img.width, img.height, bpl, fmt))
+
+# ── Background image preloader ────────────────────────────────────────────────
+class Preloader(QThread):
+    done = Signal(str, object)   # (path, PIL Image | None)
+
+    def __init__(self, path: str):
         super().__init__()
-        self.title("Drawing Session")
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-        width = int(sw * 0.8)
-        height = int(sh * 0.8)
-        x = (sw // 2) - (width // 2)
-        y = (sh // 2) - (height // 2)
-        self.geometry(f"{width}x{height}+{x}+{y}")
-        self.initial_seconds = seconds
-        self.seconds_left = seconds
-        self.source = source
-        self.source_type = source_type
-        self.original_bg = self.cget("bg")
+        self.path = path
 
-        self.blink_on = False
-        self.scale = 1.0
-        self.fit_scale = 1.0
-        self.img_container = None
-        self.img_x = 0
-        self.img_y = 0
-        self.pan_last_x = 0
-        self.pan_last_y = 0
-        self.paused = False
-        self.flipped = False
-        self.is_bw = False
-        self.show_grid = False
-        self.grid_divisions = 3
-        self.grid_offset_x = 0.0
-        self.grid_offset_y = 0.0
-        self.grid_pan_last_x = 0
-        self.grid_pan_last_y = 0
-        self.grid_lines = []
-        self.brightness_val = tk.DoubleVar(value=1.0)
-        self.contrast_val = tk.DoubleVar(value=1.0)
-        self.ui_visible = True
-        self.last_win_size = (width, height)
-        self.ms_to_next_tick = 1000
-        self.last_tick_start = time.time()
-        self._timer_after_id = None
-        self.original_pil = None
-
-        self.canvas = tk.Canvas(self, bg="#2e2e2e", highlightthickness=0)
-        self.canvas.pack(expand=True, fill="both")
-        self.canvas.bind("<Configure>", self.on_resize)
-
-        self.canvas.bind("<ButtonPress-1>", self.start_pan)
-        self.canvas.bind("<Double-Button-1>", self.on_double_click)
-        self.canvas.bind("<B1-Motion>", self.pan)
-        self.canvas.bind("<ButtonPress-3>", self.start_grid_pan)
-        self.canvas.bind("<B3-Motion>", self.grid_pan)
-        self.canvas.bind("<MouseWheel>", self.zoom)      # Windows/macOS
-        self.canvas.bind("<Button-4>", self.zoom)        # Linux Scroll Up
-        self.canvas.bind("<Button-5>", self.zoom)        # Linux Scroll Down
-
-        self.bind("<space>", lambda e: self.toggle_pause())
-        self.bind("r", lambda e: self.reset_view())
-        self.bind("f", lambda e: self.toggle_flip())
-        self.bind("g", lambda e: self.toggle_grid())
-        self.bind("+", lambda e: self.change_grid_divisions(1))
-        self.bind("-", lambda e: self.change_grid_divisions(-1))
-        self.bind("b", lambda e: self.toggle_bw())
-        self.bind("n", lambda e: self.next_image())
-        self.bind("t", lambda e: self.restart_timer())
-        self.bind("h", lambda e: self.toggle_ui())
-        self.bind("?", lambda e: self.show_help())
-        self.bind("<Control-g>", lambda e: self.toggle_grid())
-        self.bind("<F1>", lambda e: self.show_help())
-        self.bind("<F11>", lambda e: self.toggle_fullscreen())
-        self.bind("<Escape>", lambda e: self.destroy())
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
-
-        self.timer_frame = tk.Frame(self, bg="#1a1a1a", padx=15, pady=10)
-        self.timer_label = tk.Label(self.timer_frame, text=self.format_time(),
-                                    font=("Helvetica", 42, "bold"),
-                                    bg="#1a1a1a", fg="#ffffff",
-                                    pady=5)
-        self.timer_label.pack(side="left", padx=(0, 15), pady=(5, 0))
-
-        btn_style = {
-            "bg": "#1a1a1a",
-            "fg": "#cccccc",
-            "activebackground": "#333333",
-            "activeforeground": "#ffffff",
-            "bd": 0,
-            "highlightthickness": 0,
-            "font": ("Helvetica", 24),
-            "width": 2,
-            "cursor": "hand2"
-        }
-
-        self.pause_button = tk.Button(self.timer_frame, text="⏸",
-                                      command=self.toggle_pause,
-                                      **btn_style)
-        self.pause_button.pack(side="left", padx=(0, 10))
-
-        self.restart_timer_button = tk.Button(self.timer_frame, text="⏱",
-                                              command=self.restart_timer,
-                                              **btn_style)
-        self.restart_timer_button.pack(side="left", padx=(0, 10))
-
-        self.next_button = tk.Button(self.timer_frame, text="⏭",
-                                     command=self.next_image,
-                                     **btn_style)
-        self.next_button.pack(side="left", padx=(0, 10))
-
-        self.reset_button = tk.Button(self.timer_frame, text="🔄",
-                                      command=self.reset_view,
-                                      **btn_style)
-        self.reset_button.pack(side="left", padx=(0, 10))
-
-        self.flip_button = tk.Button(self.timer_frame, text="↔",
-                                     command=self.toggle_flip,
-                                     **btn_style)
-        self.flip_button.pack(side="left")
-
-        self.grid_button = tk.Button(self.timer_frame, text="▦",
-                                     command=self.toggle_grid,
-                                     **btn_style)
-        self.grid_button.pack(side="left", padx=(10, 0))
-
-        self.bw_button = tk.Button(self.timer_frame, text="🌓",
-                                   command=self.toggle_bw,
-                                   **btn_style)
-        self.bw_button.pack(side="left", padx=(10, 0))
-
-        tk.Label(self.timer_frame, text="B", bg="#1a1a1a", fg="#cccccc", font=("Helvetica", 12, "bold")).pack(side="left", padx=(10, 0))
-        self.bright_scale = tk.Scale(self.timer_frame, variable=self.brightness_val, from_=0.0, to=3.0,
-                                     resolution=0.1, orient="horizontal", showvalue=True,
-                                     bg="#1a1a1a", fg="#ffffff", troughcolor="#333333",
-                                     activebackground="#444444", highlightthickness=0, bd=0,
-                                     sliderrelief="flat", width=15, length=100,
-                                     font=("Helvetica", 9), command=self.on_adj_change)
-        self.bright_scale.pack(side="left", padx=5)
-        self.bright_scale.bind("<Double-1>", lambda e: (self.brightness_val.set(1.0), self.on_adj_change(None)))
-
-        tk.Label(self.timer_frame, text="C", bg="#1a1a1a", fg="#cccccc", font=("Helvetica", 12, "bold")).pack(side="left", padx=(10, 0))
-        self.contrast_scale = tk.Scale(self.timer_frame, variable=self.contrast_val, from_=0.0, to=3.0,
-                                       resolution=0.1, orient="horizontal", showvalue=True,
-                                       bg="#1a1a1a", fg="#ffffff", troughcolor="#333333",
-                                       activebackground="#444444", highlightthickness=0, bd=0,
-                                       sliderrelief="flat", width=15, length=100,
-                                       font=("Helvetica", 9), command=self.on_adj_change)
-        self.contrast_scale.pack(side="left", padx=5)
-        self.contrast_scale.bind("<Double-1>", lambda e: (self.contrast_val.set(1.0), self.on_adj_change(None)))
-
-        self.help_button = tk.Button(self.timer_frame, text="?",
-                                     command=self.show_help,
-                                     **btn_style)
-        self.help_button.pack(side="left", padx=(15, 0))
-
-        self.display_image(image_data, is_path)
-
-        self.timer_frame.place(x=25, y=25, anchor="nw")
-        self.timer_frame.lift()
-
-        if self.seconds_left > 0:
-            self.update_timer()
-        else:
-            self.timer_label.pack_forget()
-            self.pause_button.pack_forget()
-            self.restart_timer_button.pack_forget()
-
-    def display_image(self, data, is_path):
+    def run(self):
         try:
-            if is_path:
-                self.original_pil = Image.open(data)
-            else:
-                self.original_pil = Image.open(BytesIO(data))
+            img = Image.open(self.path)
+            img.load()
+            self.done.emit(self.path, img)
+        except Exception:
+            self.done.emit(self.path, None)
 
-            if self.img_container is not None:
-                self.img_x = self.winfo_width() // 2
-                self.img_y = self.winfo_height() // 2
+# ── Circular countdown widget ─────────────────────────────────────────────────
+class CircularTimer(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(66, 66)
+        self.seconds_left = 0
+        self.initial_seconds = 0
 
-            self.calculate_fit()
-            self.render_image()
-        except Exception as e:
-            print(f"Fehler beim Laden des Bildes: {e}")
+    def update_state(self, seconds_left: int, initial_seconds: int):
+        self.seconds_left = seconds_left
+        self.initial_seconds = initial_seconds
+        self.update()
 
-    def calculate_fit(self):
-        if self.original_pil:
-            self.update_idletasks()
-            cw = self.canvas.winfo_width()
-            ch = self.canvas.winfo_height()
-            if cw < 10 or ch < 10:
-                return
-            iw, ih = self.original_pil.size
-            if iw == 0 or ih == 0:
-                return
-            self.fit_scale = min(cw / iw, ch / ih)
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect().adjusted(6, 6, -6, -6)
 
-    def on_resize(self, event):
-        if self.original_pil and (event.width, event.height) != self.last_win_size:
-            old_w, old_h = self.last_win_size
-            self.last_win_size = (event.width, event.height)
-            old_fit = self.fit_scale
-            self.calculate_fit()
-            ratio = self.fit_scale / old_fit if old_fit > 0 else 1
-            cx_old, cy_old = old_w // 2, old_h // 2
-            cx_new, cy_new = event.width // 2, event.height // 2
-            self.img_x = cx_new + (self.img_x - cx_old) * ratio
-            self.img_y = cy_new + (self.img_y - cy_old) * ratio
-            self.render_image(resample=Image.Resampling.BILINEAR)
+        p.setPen(QPen(QColor("#333333"), 4))
+        p.drawEllipse(r)
 
-    def render_image(self, resample=Image.Resampling.LANCZOS):
-        if not self.winfo_exists() or self.original_pil is None:
-            return
+        frac = (self.seconds_left / self.initial_seconds
+                if self.initial_seconds > 0 else 1.0)
+        if frac > 0:
+            pen = QPen(QColor("#4a9eff") if frac > 0.25 else QColor("#ff4444"), 4)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawArc(r, 90 * 16, int(-360 * frac * 16))
 
-        w, h = self.original_pil.size
-        new_size = (int(w * self.fit_scale * self.scale), int(h * self.fit_scale * self.scale))
+        p.setPen(QPen(QColor("#f0f0f0")))
+        p.setFont(QFont("Helvetica", 11, QFont.Bold))
+        m, s = divmod(self.seconds_left, 60)
+        p.drawText(self.rect(), Qt.AlignCenter, f"{m:02d}:{s:02d}")
 
-        if new_size[0] < 10 or new_size[1] < 10:
-            return
-        if new_size[0] > 10000 or new_size[1] > 10000:
-            return
+# ── Floating brightness / contrast panel ──────────────────────────────────────
+class AdjustPanel(QWidget):
+    changed = Signal()
 
-        resized_img = self.original_pil.resize(new_size, resample)
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint)
+        self.setFixedWidth(270)
+        self.brightness = 1.0
+        self.contrast   = 1.0
+        self.setStyleSheet("""
+            QWidget  { background:#1e1e1e; border-radius:8px; }
+            QLabel   { background:transparent; }
+            QPushButton { background:#2a2a2a; color:#888; border:none;
+                          border-radius:4px; padding:4px; font-size:9px; }
+            QPushButton:hover { background:#3a3a3a; color:#f0f0f0; }
+        """)
 
-        if self.flipped:
-            resized_img = resized_img.transpose(Image.FLIP_LEFT_RIGHT)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(10)
 
-        if self.is_bw:
-            resized_img = resized_img.convert("L")
+        hdr_row = QHBoxLayout()
+        hdr_row.setContentsMargins(0, 0, 0, 0)
+        hdr = QLabel("Bildanpassungen")
+        hdr.setStyleSheet("color:#888; font-size:10px; font-weight:bold;")
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(18, 18)
+        close_btn.setStyleSheet(
+            "QPushButton { background:transparent; color:#666; font-size:10px; padding:0; }"
+            "QPushButton:hover { color:#f0f0f0; }"
+        )
+        close_btn.clicked.connect(self.hide)
+        hdr_row.addWidget(hdr)
+        hdr_row.addStretch()
+        hdr_row.addWidget(close_btn)
+        v.addLayout(hdr_row)
 
-        b = self.brightness_val.get()
-        if b != 1.0:
-            resized_img = ImageEnhance.Brightness(resized_img).enhance(b)
-        c = self.contrast_val.get()
-        if c != 1.0:
-            resized_img = ImageEnhance.Contrast(resized_img).enhance(c)
+        self._b_slider, _ = self._row("Helligkeit", v)
+        self._c_slider, _ = self._row("Kontrast",   v)
 
-        self.photo = ImageTk.PhotoImage(resized_img)
+        rst = QPushButton("Zurücksetzen")
+        rst.clicked.connect(self.reset)
+        v.addWidget(rst)
 
-        try:
-            if self.img_container is None:
-                self.img_x, self.img_y = self.winfo_width() // 2, self.winfo_height() // 2
-                self.img_container = self.canvas.create_image(self.img_x, self.img_y, image=self.photo, anchor="center")
-            else:
-                self.canvas.itemconfig(self.img_container, image=self.photo)
-                self.canvas.coords(self.img_container, self.img_x, self.img_y)
-            self.draw_grid()
-        except tk.TclError:
-            pass
+    def _row(self, label: str, layout) -> tuple:
+        row = QWidget()
+        row.setStyleSheet("background:transparent;")
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel(label)
+        lbl.setStyleSheet("color:#f0f0f0; font-size:10px;")
+        lbl.setFixedWidth(80)
+        sl = QSlider(Qt.Horizontal)
+        sl.setRange(0, 300)
+        sl.setValue(100)
+        val = QLabel("1.0")
+        val.setStyleSheet("color:#888; font-size:9px;")
+        val.setFixedWidth(26)
+        sl.valueChanged.connect(lambda v, lv=val: lv.setText(f"{v/100:.1f}"))
+        sl.valueChanged.connect(self._on_change)
+        sl.mouseDoubleClickEvent = lambda e, s=sl: s.setValue(100)
+        h.addWidget(lbl); h.addWidget(sl); h.addWidget(val)
+        layout.addWidget(row)
+        return sl, val
 
-    def draw_grid(self):
-        for line in self.grid_lines:
-            self.canvas.delete(line)
-        self.grid_lines = []
+    def _on_change(self):
+        self.brightness = self._b_slider.value() / 100
+        self.contrast   = self._c_slider.value() / 100
+        self.changed.emit()
 
-        if self.show_grid and self.photo:
-            iw, ih = self.photo.width(), self.photo.height()
-            x_min, y_min = self.img_x - iw // 2, self.img_y - ih // 2
-            x_max, y_max = x_min + iw, y_min + ih
+    def reset(self):
+        self._b_slider.setValue(100)
+        self._c_slider.setValue(100)
 
-            step_x = iw / self.grid_divisions
-            curr_x = (self.grid_offset_x * iw) % step_x
-            while curr_x < iw:
-                if 1 < curr_x < iw - 1:
-                    lx = x_min + curr_x
-                    line = self.canvas.create_line(lx, y_min, lx, y_max, fill="#ffffff", dash=(4, 4), stipple="gray50")
-                    self.grid_lines.append(line)
-                curr_x += step_x
-
-            step_y = ih / self.grid_divisions
-            curr_y = (self.grid_offset_y * ih) % step_y
-            while curr_y < ih:
-                if 1 < curr_y < ih - 1:
-                    ly = y_min + curr_y
-                    line = self.canvas.create_line(x_min, ly, x_max, ly, fill="#ffffff", dash=(4, 4), stipple="gray50")
-                    self.grid_lines.append(line)
-                curr_y += step_y
-
-    def zoom(self, event):
-        ratio = 1.1 if (event.num == 4 or event.delta > 0) else 0.909090909
-        self.scale *= ratio
-
-        if hasattr(self, "_zoom_job_fast"): self.after_cancel(self._zoom_job_fast)
-        if hasattr(self, "_zoom_job_slow"): self.after_cancel(self._zoom_job_slow)
-
-        # ~1 frame at 60fps: gives the event loop a paint window between scroll events
-        self._zoom_job_fast = self.after(16, lambda: self.render_image(resample=Image.Resampling.NEAREST))
-        self._zoom_job_slow = self.after(300, self.render_image)
-
-    def on_adj_change(self, _):
-        if hasattr(self, "_adj_job_fast"): self.after_cancel(self._adj_job_fast)
-        if hasattr(self, "_adj_job_slow"): self.after_cancel(self._adj_job_slow)
-
-        self._adj_job_fast = self.after(16, lambda: self.render_image(resample=Image.Resampling.NEAREST))
-        self._adj_job_slow = self.after(400, self.render_image)
-
-    def toggle_ui(self):
-        if self.ui_visible:
-            self.timer_frame.place_forget()
+    def toggle(self, anchor: QWidget):
+        if self.isVisible():
+            self.hide()
         else:
-            self.timer_frame.place(x=25, y=25, anchor="nw")
-            self.timer_frame.lift()
-        self.ui_visible = not self.ui_visible
+            gp  = anchor.mapToGlobal(anchor.rect().topRight())
+            pos = QPoint(gp.x() - self.width() - 8, gp.y() + 4)
+            self.move(pos)
+            self.show()
+            self.raise_()
 
-    def toggle_fullscreen(self):
-        is_full = self.attributes("-fullscreen")
-        self.attributes("-fullscreen", not is_full)
+# ── Image view (QGraphicsView — GPU zoom/pan) ─────────────────────────────────
+class ImageView(QGraphicsView):
+    scale_changed = Signal(float)
+    mouse_moved   = Signal()
 
-    def toggle_flip(self):
-        self.flipped = not self.flipped
-        self.render_image()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self.setMouseTracking(True)
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.setBackgroundBrush(QBrush(QColor("#111111")))
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
 
-    def toggle_grid(self):
-        self.show_grid = not self.show_grid
-        self.render_image()
+        self._pix = QGraphicsPixmapItem()
+        self._pix.setTransformationMode(Qt.SmoothTransformation)
+        self._scene.addItem(self._pix)
 
-    def change_grid_divisions(self, delta):
-        self.grid_divisions = max(2, self.grid_divisions + delta)
-        if self.show_grid:
-            self.draw_grid()
+        self._original_pil = None
+        self._flipped      = False
+        self._bw           = False
+        self._brightness   = 1.0
+        self._contrast     = 1.0
+        self._fitted       = True
+        self._fit_scale    = 1.0
+        self._grid_on      = False
+        self._grid_div     = 3
+        self._grid_off_x   = 0.0
+        self._grid_off_y   = 0.0
+        self._grid_items   = []
+        self._grid_pan_pos = None
 
-    def toggle_bw(self):
-        self.is_bw = not self.is_bw
-        self.render_image()
+        self._adjust_timer = QTimer(self)
+        self._adjust_timer.setSingleShot(True)
+        self._adjust_timer.setInterval(80)
+        self._adjust_timer.timeout.connect(self._rebuild)
+
+    # ── Loading ───────────────────────────────────────────────────────────────
+    def load_pil(self, img: Image.Image):
+        self._original_pil = img
+        self._flipped = self._bw = False
+        self._brightness = self._contrast = 1.0
+        self._grid_off_x = self._grid_off_y = 0.0
+        self._rebuild()
+        self._scene.setSceneRect(self._pix.boundingRect())
+        self.fit_image()
+
+    def _rebuild(self):
+        if self._original_pil is None:
+            return
+        img = self._original_pil
+        if self._bw:
+            img = img.convert("L")
+        if self._brightness != 1.0:
+            img = ImageEnhance.Brightness(img).enhance(self._brightness)
+        if self._contrast != 1.0:
+            img = ImageEnhance.Contrast(img).enhance(self._contrast)
+        px = _to_pixmap(img)
+        if self._flipped:
+            px = px.transformed(QTransform().scale(-1, 1))
+        self._pix.setPixmap(px)
+        self._update_grid()
+
+    # ── Adjustments ───────────────────────────────────────────────────────────
+    def set_adjustments(self, brightness: float, contrast: float):
+        self._brightness = brightness
+        self._contrast   = contrast
+        self._adjust_timer.start()  # restarts the 80 ms window on every tick
+
+    def set_bw(self, on: bool):
+        self._bw = on
+        self._rebuild()
+
+    def toggle_flip(self) -> bool:
+        self._flipped = not self._flipped
+        self._rebuild()
+        return self._flipped
 
     def reset_view(self):
-        self.scale = 1.0
-        self.flipped = False
-        self.is_bw = False
-        self.brightness_val.set(1.0)
-        self.contrast_val.set(1.0)
-        self.grid_offset_x = 0.0
-        self.grid_offset_y = 0.0
-        self.img_x = self.winfo_width() // 2
-        self.img_y = self.winfo_height() // 2
-        self.render_image(resample=Image.Resampling.LANCZOS)
+        self._flipped = self._bw = False
+        self._brightness = self._contrast = 1.0
+        self._grid_off_x = self._grid_off_y = 0.0
+        self._rebuild()
+        self.fit_image()
 
-    def show_help(self):
-        help_text = (
-            "Keyboard Shortcuts:\n\n"
-            "Space\t: Pause / Resume Timer\n"
-            "T\t: Restart Timer\n"
-            "N\t: Next Image\n"
-            "R\t: Reset Zoom & Pan\n"
-            "G\t: Toggle Grid\n"
-            "+ / -\t: Adjust Grid Density\n"
-            "F\t: Flip Image Horizontally\n"
-            "B\t: Toggle Black & White\n"
-            "H\t: Toggle UI Visibility\n"
-            "F11\t: Toggle Fullscreen\n"
-            "Esc\t: Exit Session\n"
-            "F1 / ?\t: Show this Help"
-        )
-        messagebox.showinfo("VanGogh - Shortcuts", help_text, parent=self)
+    # ── Fit / zoom ────────────────────────────────────────────────────────────
+    def fit_image(self):
+        self.fitInView(self._pix, Qt.KeepAspectRatio)
+        self._fit_scale = self.transform().m11()
+        self._fitted    = True
+        self.scale_changed.emit(1.0)
 
-    def restart_timer(self):
-        if self.initial_seconds <= 0:
-            return
-        self.seconds_left = self.initial_seconds
-        self.ms_to_next_tick = 1000
-        self.last_tick_start = time.time()
-        self.blink_on = False
-        self.timer_label.config(text=self.format_time(), bg="#1a1a1a", fg="#ffffff")
-        self.update_timer()
+    def _rel_scale(self) -> float:
+        fs = self._fit_scale if self._fit_scale > 0 else 1.0
+        return self.transform().m11() / fs
 
-    def next_image(self):
-        if self.source_type == "local" and self.source:
-            new_path = random.choice(self.source)
-            self.scale = 1.0
-            self.display_image(new_path, is_path=True)
-            self.restart_timer()
-        elif self.source_type == "web" and self.source:
-            image_url = f"https://loremflickr.com/1920/1080/{quote(self.source)}"
-            try:
-                response = requests.get(image_url, timeout=10)
-                response.raise_for_status()
-                self.scale = 1.0
-                self.display_image(response.content, is_path=False)
-                self.restart_timer()
-            except Exception as e:
-                messagebox.showerror("Fehler", f"Nächstes Bild konnte nicht geladen werden:\n{e}", parent=self)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._fitted:
+            self.fit_image()
 
-    def on_double_click(self, event):
-        for job in ("_zoom_job_fast", "_zoom_job_slow"):
-            if hasattr(self, job):
-                self.after_cancel(getattr(self, job))
+    def wheelEvent(self, event):
+        factor = 1.1 if event.angleDelta().y() > 0 else 0.909
+        self.scale(factor, factor)
+        self._fitted = False
+        self.scale_changed.emit(self._rel_scale())
+        self._update_grid()
 
-        if self.scale == 1.0:
-            ratio = 2.0
-            self.img_x = event.x - (event.x - self.img_x) * ratio
-            self.img_y = event.y - (event.y - self.img_y) * ratio
-            self.scale = ratio
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if self._fitted:
+                self.scale(2.0, 2.0)
+                self._fitted = False
+                self._update_grid()
+            else:
+                self.fit_image()
+            self.scale_changed.emit(self._rel_scale())
+        super().mouseDoubleClickEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self.mouse_moved.emit()
+        if self._grid_pan_pos is not None and (event.buttons() & Qt.RightButton):
+            d  = event.pos() - self._grid_pan_pos
+            iw = self._pix.pixmap().width()
+            ih = self._pix.pixmap().height()
+            sc = self.transform().m11()
+            if iw and ih:
+                self._grid_off_x = (self._grid_off_x + d.x() / (iw * sc)) % 1.0
+                self._grid_off_y = (self._grid_off_y + d.y() / (ih * sc)) % 1.0
+            self._grid_pan_pos = event.pos()
+            self._update_grid()
         else:
-            self.scale = 1.0
+            super().mouseMoveEvent(event)
 
-        self.render_image()
+    def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self._grid_pan_pos = event.pos()
+        else:
+            super().mousePressEvent(event)
 
-    def start_pan(self, event):
-        self.pan_last_x, self.pan_last_y = event.x, event.y
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self._grid_pan_pos = None
+        else:
+            super().mouseReleaseEvent(event)
 
-    def pan(self, event):
-        dx, dy = event.x - self.pan_last_x, event.y - self.pan_last_y
-        self.img_x += dx
-        self.img_y += dy
-        if self.img_container:
-            self.canvas.move(self.img_container, dx, dy)
-        for line in self.grid_lines:
-            self.canvas.move(line, dx, dy)
-        self.pan_last_x, self.pan_last_y = event.x, event.y
+    # ── Grid ──────────────────────────────────────────────────────────────────
+    def toggle_grid(self) -> bool:
+        self._grid_on = not self._grid_on
+        self._update_grid()
+        return self._grid_on
 
-    def start_grid_pan(self, event):
-        self.grid_pan_last_x, self.grid_pan_last_y = event.x, event.y
+    def change_grid_divisions(self, delta: int):
+        self._grid_div = max(2, self._grid_div + delta)
+        if self._grid_on:
+            self._update_grid()
 
-    def grid_pan(self, event):
-        if not self.show_grid or not self.photo:
+    def _update_grid(self):
+        for item in self._grid_items:
+            self._scene.removeItem(item)
+        self._grid_items.clear()
+        if not (self._grid_on and not self._pix.pixmap().isNull()):
             return
-        iw, ih = self.photo.width(), self.photo.height()
-        dx, dy = event.x - self.grid_pan_last_x, event.y - self.grid_pan_last_y
+        iw = self._pix.pixmap().width()
+        ih = self._pix.pixmap().height()
+        pen = QPen(QColor(255, 255, 255, 160), 0)
+        pen.setStyle(Qt.DashLine)
+        pen.setCosmetic(True)
+        for total, off, vertical in (
+            (iw, self._grid_off_x, True),
+            (ih, self._grid_off_y, False),
+        ):
+            step = total / self._grid_div
+            curr = (off * total) % step
+            while curr < total:
+                if 1 < curr < total - 1:
+                    if vertical:
+                        item = self._scene.addLine(curr, 0, curr, ih, pen)
+                    else:
+                        item = self._scene.addLine(0, curr, iw, curr, pen)
+                    item.setParentItem(self._pix)
+                    self._grid_items.append(item)
+                curr += step
 
-        self.grid_offset_x = (self.grid_offset_x + dx / iw) % 1.0
-        self.grid_offset_y = (self.grid_offset_y + dy / ih) % 1.0
+# ── Session control pill (floating overlay) ───────────────────────────────────
+class SessionPill(QWidget):
+    sig_pause   = Signal()
+    sig_next    = Signal()
+    sig_flip    = Signal()
+    sig_grid    = Signal()
+    sig_bw      = Signal()
+    sig_reset   = Signal()
+    sig_adjust  = Signal()
+    sig_help    = Signal()
 
-        self.grid_pan_last_x, self.grid_pan_last_y = event.x, event.y
-        self.draw_grid()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            SessionPill { background:#252525; border-radius:12px; }
+            QWidget      { background:transparent; }
+            QPushButton {
+                background:#363636; color:#c8c8c8; border:none;
+                font-size:13px; height:32px; min-width:54px;
+                border-radius:6px; padding:0 12px;
+            }
+            QPushButton:hover   { background:#484848; color:#ffffff; }
+            QPushButton:checked { background:#1a3a5c; color:#4a9eff; }
+            QPushButton#icon_btn {
+                min-width:40px; max-width:40px; font-size:17px; padding:0;
+            }
+        """)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(16, 10, 16, 10)
+        h.setSpacing(6)
 
-    def format_time(self):
-        mins, secs = divmod(self.seconds_left, 60)
-        return f"{mins:02d}:{secs:02d}"
+        self.timer_widget = CircularTimer()
+        h.addWidget(self.timer_widget)
+        h.addSpacing(4)
+        self._sep()
+
+        self.pause_btn = self._btn("⏸", self.sig_pause, icon=True)
+        self._btn("⏭", self.sig_next, icon=True)
+        self._sep()
+
+        self.flip_btn = self._btn("Flip",   self.sig_flip, checkable=True)
+        self.grid_btn = self._btn("Raster", self.sig_grid, checkable=True)
+        self.bw_btn   = self._btn("S/W",    self.sig_bw,   checkable=True)
+        self._sep()
+
+        self._btn("Anpassen", self.sig_adjust)
+        self._btn("Reset",    self.sig_reset)
+
+    def _btn(self, text, sig=None, checkable=False, icon=False):
+        b = QPushButton(text, self)
+        b.setCheckable(checkable)
+        if icon:
+            b.setObjectName("icon_btn")
+        if sig:
+            b.clicked.connect(sig)
+        self.layout().addWidget(b)
+        return b
+
+    def _sep(self):
+        f = QFrame(self)
+        f.setFrameShape(QFrame.VLine)
+        f.setFixedSize(1, 20)
+        f.setStyleSheet("background:#444; border:none;")
+        self.layout().addSpacing(2)
+        self.layout().addWidget(f)
+        self.layout().addSpacing(2)
+
+    def reposition(self, parent_w: int):
+        self.adjustSize()
+        self.move((parent_w - self.width()) // 2, 16)
+
+# ── Drawing Session ───────────────────────────────────────────────────────────
+class DrawingSession(QMainWindow):
+    def __init__(self, image_data, seconds: int,
+                 is_path=True, source=None, source_type=None):
+        super().__init__()
+        self.setWindowTitle("VanGogh")
+        scr = QApplication.primaryScreen().size()
+        self.resize(int(scr.width() * 0.85), int(scr.height() * 0.85))
+
+        self.initial_seconds = seconds
+        self.seconds_left    = seconds
+        self.source          = source
+        self.source_type     = source_type
+        self._preloader      = None
+        self._preloaded      = None
+        self._paused         = False
+
+        # Central view
+        self.view = ImageView()
+        self.setCentralWidget(self.view)
+        self.view.mouse_moved.connect(self._on_mouse_moved)
+        self.view.scale_changed.connect(self._show_zoom)
+
+        # Pill (child of central widget so it floats above the view)
+        self.pill = SessionPill(self.view)
+        self.pill.sig_pause.connect(self.toggle_pause)
+        self.pill.sig_next.connect(self.next_image)
+        self.pill.sig_flip.connect(self._do_flip)
+        self.pill.sig_grid.connect(self._do_grid)
+        self.pill.sig_bw.connect(self._do_bw)
+        self.pill.sig_reset.connect(self._do_reset)
+        self.pill.sig_adjust.connect(lambda: self.adjust.toggle(self.pill))
+        self.pill.sig_help.connect(self._show_help)
+        self.pill.raise_()
+        self.pill.enterEvent = lambda e: self._autohide.stop()
+        self.pill.leaveEvent = lambda e: self._autohide.start()
+
+        # Adjust panel
+        self.adjust = AdjustPanel(self)
+        self.adjust.changed.connect(lambda: self.view.set_adjustments(
+            self.adjust.brightness, self.adjust.contrast))
+
+        # Zoom label
+        self._zoom_lbl = QLabel(self.view)
+        self._zoom_lbl.setStyleSheet(
+            "background:#000; color:#f0f0f0; padding:4px 9px;"
+            "border-radius:4px; font-size:12px; font-weight:bold;")
+        self._zoom_lbl.hide()
+        self._zoom_timer = QTimer(singleShot=True)
+        self._zoom_timer.timeout.connect(self._zoom_lbl.hide)
+
+        # Time-up overlay
+        self._timeup = QLabel(
+            "Zeit abgelaufen\n\n"
+            "N → Nächstes Bild     Space → Pause     T → Neu starten",
+            self.view)
+        self._timeup.setAlignment(Qt.AlignCenter)
+        self._timeup.setStyleSheet(
+            "background:rgba(0,0,0,210); color:#f0f0f0;"
+            "font-size:16px; padding:40px;")
+        self._timeup.hide()
+        self._timeup_timer = QTimer(singleShot=True)
+        self._timeup_timer.timeout.connect(self._timeup.hide)
+
+        # Countdown
+        self._tick_timer = QTimer()
+        self._tick_timer.setInterval(1000)
+        self._tick_timer.timeout.connect(self._tick)
+
+        # Auto-hide
+        self._autohide = QTimer(singleShot=True)
+        self._autohide.setInterval(3000)
+        self._autohide.timeout.connect(self.pill.hide)
+
+        self._setup_shortcuts()
+        self._load(image_data, is_path)
+
+        if seconds > 0:
+            self.pill.timer_widget.update_state(seconds, seconds)
+            self._tick_timer.start()
+        else:
+            self.pill.timer_widget.hide()
+            self.pill.pause_btn.hide()
+
+        self._preload_next()
+        self._autohide.start()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        vw = self.view.width()
+        vh = self.view.height()
+        self.pill.reposition(vw)
+        self._timeup.resize(vw, vh)
+        if not self._zoom_lbl.isHidden():
+            self._reposition_zoom_lbl()
+
+    def _load(self, data, is_path: bool, pil=None):
+        try:
+            img = pil if pil is not None else (
+                Image.open(data) if is_path else Image.open(BytesIO(data)))
+            self.view.load_pil(img)
+        except Exception as e:
+            QMessageBox.critical(self, "Fehler", f"Bild konnte nicht geladen werden:\n{e}")
+
+    # ── Shortcuts ─────────────────────────────────────────────────────────────
+    def _setup_shortcuts(self):
+        def s(key, fn):
+            QShortcut(QKeySequence(key), self).activated.connect(fn)
+        s("Space",   self.toggle_pause)
+        s("N",       self.next_image)
+        s("T",       self._do_restart)
+        s("R",       self._do_reset)
+        s("F",       self._do_flip)
+        s("G",       self._do_grid)
+        s("B",       self._do_bw)
+        s("A",       lambda: self.adjust.toggle(self.pill))
+        s("+",       lambda: self.view.change_grid_divisions(1))
+        s("-",       lambda: self.view.change_grid_divisions(-1))
+        s("H",       self._toggle_pill)
+        s("F11",     self._toggle_fullscreen)
+        s("F1",      self._show_help)
+        s("Escape",  self.close)
+
+    # ── Auto-hide ─────────────────────────────────────────────────────────────
+    def _on_mouse_moved(self):
+        if not self.pill.isVisible():
+            self.pill.show()
+            self.pill.raise_()
+        self._autohide.start()
+
+    def _toggle_pill(self):
+        if self.pill.isVisible():
+            self._autohide.stop()
+            self.pill.hide()
+        else:
+            self.pill.show()
+            self._autohide.start()
+
+    # ── Zoom overlay ──────────────────────────────────────────────────────────
+    def _show_zoom(self, rel_scale: float):
+        self._zoom_lbl.setText(f"{int(rel_scale * 100)}%")
+        self._zoom_lbl.adjustSize()
+        self._reposition_zoom_lbl()
+        self._zoom_lbl.show()
+        self._zoom_lbl.raise_()
+        self._zoom_timer.start(1500)
+
+    def _reposition_zoom_lbl(self):
+        vw = self.view.width()
+        vh = self.view.height()
+        self._zoom_lbl.move(vw - self._zoom_lbl.width() - 16,
+                             vh - self._zoom_lbl.height() - 16)
+
+    # ── Timer ─────────────────────────────────────────────────────────────────
+    def _tick(self):
+        if self.seconds_left > 0:
+            self.seconds_left -= 1
+            self.pill.timer_widget.update_state(self.seconds_left, self.initial_seconds)
+        else:
+            self._tick_timer.stop()
+            self._timeup.resize(self.view.size())
+            self._timeup.show()
+            self._timeup.raise_()
+            self._timeup_timer.start(4000)
 
     def toggle_pause(self):
         if self.initial_seconds <= 0:
             return
-        self.paused = not self.paused
-        self.pause_button.config(text="▶" if self.paused else "⏸")
-        if not self.paused:
-            self.last_tick_start = time.time()
-            self._timer_after_id = self.after(int(max(0, self.ms_to_next_tick)), self.update_timer)
+        self._paused = not self._paused
+        self.pill.pause_btn.setText("▶" if self._paused else "⏸")
+        if self._paused:
+            self._tick_timer.stop()
         else:
-            if self._timer_after_id:
-                elapsed_ms = (time.time() - self.last_tick_start) * 1000
-                self.ms_to_next_tick -= elapsed_ms
-                self.after_cancel(self._timer_after_id)
-                self._timer_after_id = None
+            self._tick_timer.start()
 
-    def on_close(self):
-        if self._timer_after_id:
-            self.after_cancel(self._timer_after_id)
-        self.destroy()
-
-    def update_timer(self):
-        if self._timer_after_id:
-            self.after_cancel(self._timer_after_id)
-            self._timer_after_id = None
-
-        if not self.winfo_exists() or self.paused:
+    def _do_restart(self):
+        if self.initial_seconds <= 0:
             return
-        if self.seconds_left > 0:
-            self.seconds_left -= 1
-            self.timer_label.config(text=self.format_time())
-            self.ms_to_next_tick = 1000
-            self.last_tick_start = time.time()
-            self._timer_after_id = self.after(1000, self.update_timer)
-        else:
-            self.start_blinking()
+        self._timeup.hide()
+        self.seconds_left = self.initial_seconds
+        self.pill.timer_widget.update_state(self.seconds_left, self.initial_seconds)
+        self._tick_timer.start()
 
-    def start_blinking(self):
-        if not self.winfo_exists():
+    # ── Actions ───────────────────────────────────────────────────────────────
+    def _do_flip(self):
+        on = self.view.toggle_flip()
+        self.pill.flip_btn.setChecked(on)
+
+    def _do_grid(self):
+        on = self.view.toggle_grid()
+        self.pill.grid_btn.setChecked(on)
+
+    def _do_bw(self):
+        on = not self.view._bw
+        self.view.set_bw(on)
+        self.pill.bw_btn.setChecked(on)
+
+    def _do_reset(self):
+        self.view.reset_view()
+        self.pill.flip_btn.setChecked(False)
+        self.pill.grid_btn.setChecked(False)
+        self.pill.bw_btn.setChecked(False)
+        self.adjust.reset()
+
+    def _toggle_fullscreen(self):
+        self.showNormal() if self.isFullScreen() else self.showFullScreen()
+
+    def _show_help(self):
+        QMessageBox.information(self, "VanGogh – Shortcuts",
+            "Space\t: Pause / Resume\n"
+            "T\t: Timer neu starten\n"
+            "N\t: Nächstes Bild\n"
+            "R\t: Ansicht zurücksetzen\n"
+            "G\t: Raster an/aus\n"
+            "+ / -\t: Raster-Dichte\n"
+            "F\t: Spiegeln\n"
+            "B\t: Schwarz/Weiß\n"
+            "A\t: Anpassungen\n"
+            "H\t: UI ein/ausblenden\n"
+            "F11\t: Vollbild\n"
+            "Esc\t: Beenden")
+
+    # ── Preload / next ────────────────────────────────────────────────────────
+    def _preload_next(self):
+        if self.source_type != "local" or not self.source:
             return
-        self.blink_on = not self.blink_on
-        color = "#ffffff" if self.blink_on else "#ff4444"
-        self.timer_label.config(bg=color, fg="#000000" if self.blink_on else "#ffffff")
-        self._timer_after_id = self.after(500, self.start_blinking)
+        self._preloader = Preloader(random.choice(self.source))
+        self._preloader.done.connect(lambda p, img: setattr(self, "_preloaded", (p, img)))
+        self._preloader.start()
+
+    def next_image(self):
+        self._timeup.hide()
+        if self.source_type == "local" and self.source:
+            if self._preloaded:
+                path, pil = self._preloaded
+                self._preloaded = None
+            else:
+                path, pil = random.choice(self.source), None
+            self._load(path, is_path=True, pil=pil)
+            self._do_restart()
+            self._preload_next()
+        elif self.source_type == "web" and self.source:
+            try:
+                r = requests.get(
+                    f"https://loremflickr.com/1920/1080/{quote(self.source)}",
+                    timeout=10)
+                r.raise_for_status()
+                self._load(r.content, is_path=False)
+                self._do_restart()
+            except Exception as e:
+                QMessageBox.critical(self, "Fehler",
+                    f"Nächstes Bild konnte nicht geladen werden:\n{e}")
+
+    def closeEvent(self, event):
+        self._tick_timer.stop()
+        self.adjust.hide()
+        super().closeEvent(event)
 
 
-class App(tk.Tk):
+# ── Main window ───────────────────────────────────────────────────────────────
+_TIMER_OPTIONS = [
+    ("Off", 0), ("30s", 30), ("1m", 60), ("2m", 120), ("3m", 180),
+    ("5m", 300), ("10m", 600), ("15m", 900), ("30m", 1800), ("Custom", -1),
+]
+
+class App(QWidget):
     def __init__(self):
         super().__init__()
-        self.title("VanGogh")
-
-        window_width = 320
-        window_height = 250
-        screen_width = self.winfo_screenwidth()
-        screen_height = self.winfo_screenheight()
-        center_x = int((screen_width / 2) - (window_width / 2))
-        center_y = int((screen_height / 2) - (window_height / 2))
-        self.geometry(f"{window_width}x{window_height}+{center_x}+{center_y}")
-
+        self.setWindowTitle("VanGogh")
+        self.setFixedSize(622, 520)
+        self.timer_seconds = 0
+        self._timer_btns   = {}
+        self.recent        = _load_recent()
         self._build_ui()
+        s = QApplication.primaryScreen().geometry()
+        self.move((s.width() - self.width()) // 2, (s.height() - self.height()) // 2)
 
     def _build_ui(self):
-        time_options = ["Off", "1min", "2min", "3min", "5min", "10min", "15min", "30min", "Custom"]
-        self.time_var = tk.StringVar(self)
-        self.time_var.set(time_options[0])
+        root = QVBoxLayout(self)
+        root.setContentsMargins(32, 25, 32, 18)
+        root.setSpacing(0)
 
-        timer_frame = tk.Frame(self)
-        timer_frame.pack(pady=(15, 0))
-        tk.Label(timer_frame, text="Time Mode:").pack(side="left", padx=5)
-        tk.OptionMenu(timer_frame, self.time_var, *time_options).pack(side="left")
+        # Header
+        hdr = QHBoxLayout()
+        t = QLabel("VanGogh")
+        t.setStyleSheet("font-size:28px; font-weight:bold;")
+        sub = QLabel("Gesture Drawing")
+        sub.setStyleSheet("font-size:15px; color:#555; padding-top:6px; padding-left:10px;")
+        hdr.addWidget(t); hdr.addWidget(sub); hdr.addStretch()
+        root.addLayout(hdr)
+        root.addSpacing(16)
+        root.addWidget(self._hdiv())
+        root.addSpacing(14)
 
-        tk.Button(self, text="Select Images from Folder", command=self.open_local_images).pack(pady=(20, 10))
+        # Timer chips
+        lbl = QLabel("TIMER")
+        lbl.setStyleSheet("font-size:13px; font-weight:bold; color:#555;")
+        root.addWidget(lbl)
+        chips = QHBoxLayout()
+        chips.setSpacing(3)
+        chips.setContentsMargins(0, 5, 0, 0)
+        for label, secs in _TIMER_OPTIONS:
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setFixedHeight(30)
+            b.clicked.connect(lambda _, s=secs, l=label: self._select_timer(s, l))
+            chips.addWidget(b)
+            self._timer_btns[label] = b
+        chips.addStretch()
+        root.addLayout(chips)
+        self._timer_btns["Off"].setChecked(True)
 
-        tk.Frame(self, height=2, bd=1, relief="sunken").pack(fill="x", padx=20, pady=10)
+        root.addSpacing(14)
+        root.addWidget(self._hdiv())
+        root.addSpacing(14)
 
-        search_frame = tk.Frame(self)
-        search_frame.pack(pady=5)
-        self.search_entry = tk.Entry(search_frame, width=15)
-        self.search_entry.pack(side="left", padx=5)
-        tk.Button(search_frame, text="Random Web Image", command=self.open_random_web_image).pack(side="left")
+        # Two columns
+        cols = QHBoxLayout()
+        cols.setSpacing(0)
+        cols.addWidget(self._local_col())
+        vd = QFrame(); vd.setFrameShape(QFrame.VLine)
+        vd.setStyleSheet("color:#2a2a2a;"); vd.setContentsMargins(10,0,10,0)
+        cols.addWidget(vd)
+        cols.addWidget(self._web_col())
+        root.addLayout(cols)
+        root.addStretch()
 
-        self.info_label = tk.Label(self, text="Waiting for input...")
-        self.info_label.pack(pady=10)
+        self.info_lbl = QLabel("")
+        self.info_lbl.setAlignment(Qt.AlignCenter)
+        self.info_lbl.setStyleSheet("font-size:14px; color:#555;")
+        root.addWidget(self.info_lbl)
 
-    def get_timer_seconds(self):
-        mode = self.time_var.get()
-        if mode == "Off":
-            return 0
-        if mode == "Custom":
-            mins = simpledialog.askinteger("Custom Timer", "Enter minutes:", parent=self, minvalue=1)
-            return mins * 60 if mins else 0
+    def _local_col(self) -> QWidget:
+        w = QWidget()
+        w.setStyleSheet("background:#1e1e1e; border-radius:6px;")
+        v = QVBoxLayout(w); v.setContentsMargins(18,16,18,16); v.setSpacing(7)
+        h = QLabel("Lokaler Ordner")
+        h.setStyleSheet("font-size:16px; font-weight:bold; background:transparent;")
+        s = QLabel("Referenzbilder vom Dateisystem")
+        s.setStyleSheet("font-size:14px; color:#555; background:transparent;")
+        b = QPushButton("Ordner wählen…")
+        b.setObjectName("accent_blue"); b.clicked.connect(self.open_local)
+        self._rf = QVBoxLayout()
+        self._rf.setSpacing(2)
+        v.addWidget(h); v.addWidget(s); v.addWidget(b)
+        v.addLayout(self._rf); v.addStretch()
+        self._refresh_folders()
+        return w
+
+    def _web_col(self) -> QWidget:
+        w = QWidget()
+        w.setStyleSheet("background:#1e1e1e; border-radius:6px;")
+        v = QVBoxLayout(w); v.setContentsMargins(18,16,18,16); v.setSpacing(7)
+        h = QLabel("Web-Suche")
+        h.setStyleSheet("font-size:16px; font-weight:bold; background:transparent;")
+        s = QLabel("loremflickr.com")
+        s.setStyleSheet("font-size:14px; color:#555; background:transparent;")
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Suchbegriff…")
+        self.search.returnPressed.connect(self.open_web)
+        b = QPushButton("Suchen")
+        b.setObjectName("accent_orange"); b.clicked.connect(self.open_web)
+        self._rk = QVBoxLayout()
+        self._rk.setSpacing(2)
+        v.addWidget(h); v.addWidget(s); v.addWidget(self.search); v.addWidget(b)
+        v.addLayout(self._rk); v.addStretch()
+        self._refresh_keywords()
+        return w
+
+    def _hdiv(self) -> QFrame:
+        f = QFrame(); f.setFrameShape(QFrame.HLine)
+        f.setStyleSheet("color:#2a2a2a;"); return f
+
+    def _select_timer(self, seconds: int, label: str):
+        if label == "Custom":
+            mins, ok = QInputDialog.getInt(self, "Timer", "Minuten:", 5, 1, 999)
+            if not ok:
+                self._timer_btns["Custom"].setChecked(False); return
+            seconds = mins * 60
+        for b in self._timer_btns.values():
+            b.setChecked(False)
+        (self._timer_btns.get(label) or self._timer_btns["Custom"]).setChecked(True)
+        self.timer_seconds = seconds
+
+    def _info(self, text: str, error=False):
+        self.info_lbl.setText(text)
+        self.info_lbl.setStyleSheet(
+            f"font-size:14px; color:{'#ff4444' if error else '#555'};")
+
+    def _refresh_folders(self):
+        while self._rf.count():
+            w = self._rf.takeAt(0).widget()
+            if w: w.deleteLater()
+        for folder in self.recent.get("folders", []):
+            b = QPushButton(f"↩  {os.path.basename(folder) or folder}")
+            b.setStyleSheet("font-size:12px; color:#555; text-align:left; padding:2px 4px;")
+            b.clicked.connect(lambda _, f=folder: self._open_folder(f))
+            self._rf.addWidget(b)
+
+    def _refresh_keywords(self):
+        while self._rk.count():
+            w = self._rk.takeAt(0).widget()
+            if w: w.deleteLater()
+        for kw in self.recent.get("keywords", []):
+            b = QPushButton(f"↩  {kw}")
+            b.setStyleSheet("font-size:12px; color:#555; text-align:left; padding:2px 4px;")
+            b.clicked.connect(lambda _, k=kw: self._start_web(k))
+            self._rk.addWidget(b)
+
+    def open_local(self):
+        default = (self.recent.get("folders") or [os.path.expanduser("~/Pictures")])[0]
+        folder = QFileDialog.getExistingDirectory(self, "Ordner wählen", default)
+        if folder:
+            self._open_folder(folder)
+
+    def _open_folder(self, folder: str):
+        exts = (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp")
+        paths = [os.path.join(dp, f)
+                 for dp, _, files in os.walk(folder)
+                 for f in files if f.lower().endswith(exts)]
+        if not paths:
+            self._info("Keine Bilder gefunden.", error=True); return
+        _push_recent(self.recent, "folders", folder)
+        _save_recent(self.recent)
+        self._refresh_folders()
+        selected = random.choice(paths)
+        self._info(f"{len(paths)} Bilder · {os.path.basename(selected)}")
+        DrawingSession(selected, self.timer_seconds,
+                       is_path=True, source=paths, source_type="local").show()
+
+    def open_web(self):
+        kw = self.search.text().strip()
+        if not kw:
+            self._info("Bitte Suchbegriff eingeben.", error=True); return
+        self._start_web(kw)
+
+    def _start_web(self, keyword: str):
+        self.search.setText(keyword)
+        self._info("Lade Bild …")
+        QApplication.processEvents()
         try:
-            return int(mode.replace("min", "")) * 60
-        except ValueError:
-            return 0
-
-    def open_local_images(self):
-        # 1. Define default directory
-        default_dir = os.path.expanduser("~/Pictures")
-
-        # 2. Open folder dialog
-        folder_path = filedialog.askdirectory(
-            title="Select Folder with Images",
-            initialdir=default_dir
-        )
-
-        if not folder_path:
-            return
-
-        # 3. Search images recursively in all subfolders
-        valid_extensions = (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp")
-        image_paths = []
-
-        for dirpath, _, files in os.walk(folder_path):
-            for file in files:
-                if file.lower().endswith(valid_extensions):
-                    image_paths.append(os.path.join(dirpath, file))
-
-        if not image_paths:
-            self.info_label.config(text="No images found in folder or subfolders!", fg="red")
-            return
-
-        # 4. Select random image and start session
-        selected_image_path = random.choice(image_paths)
-        self.info_label.config(text=f"Opened: {os.path.basename(selected_image_path)}", fg="green")
-
-        seconds = self.get_timer_seconds()
-        DrawingSession(selected_image_path, seconds, is_path=True, source=image_paths, source_type="local")
-
-    def open_random_web_image(self):
-        keyword = self.search_entry.get().strip()
-
-        if not keyword:
-            self.info_label.config(text="Please enter a search term!", fg="red")
-            return
-
-        image_url = f"https://loremflickr.com/1920/1080/{quote(keyword)}"
-        self.info_label.config(text="Loading image from the web...", fg="yellow")
-        self.update()
-
-        try:
-            response = requests.get(image_url, timeout=10)
-            response.raise_for_status()
-            seconds = self.get_timer_seconds()
-            DrawingSession(response.content, seconds, is_path=False, source=keyword, source_type="web")
-            self.info_label.config(text=f"Web image for '{keyword}' loaded", fg="green")
+            r = requests.get(
+                f"https://loremflickr.com/1920/1080/{quote(keyword)}", timeout=10)
+            r.raise_for_status()
+            _push_recent(self.recent, "keywords", keyword)
+            _save_recent(self.recent)
+            self._refresh_keywords()
+            self._info(f"'{keyword}' geladen.")
+            DrawingSession(r.content, self.timer_seconds,
+                           is_path=False, source=keyword, source_type="web").show()
         except Exception as e:
-            self.info_label.config(text="Download error!", fg="red")
+            self._info(f"Fehler: {e}", error=True)
 
+
+# ── Global stylesheet ─────────────────────────────────────────────────────────
+_STYLE = """
+QWidget { background:#111111; color:#f0f0f0;
+          font-family:"Helvetica","Arial",sans-serif; }
+QPushButton { background:#2a2a2a; color:#aaa; border:none;
+              border-radius:4px; padding:5px 10px; font-size:15px; }
+QPushButton:hover   { background:#3a3a3a; color:#f0f0f0; }
+QPushButton:checked { background:#1a3a5c; color:#4a9eff; }
+QPushButton#accent_blue   { background:#4a9eff; color:#fff;
+                             font-weight:bold; padding:8px; }
+QPushButton#accent_blue:hover  { background:#3a8ef0; }
+QPushButton#accent_orange { background:#ff6b35; color:#fff;
+                             font-weight:bold; padding:8px; }
+QPushButton#accent_orange:hover { background:#ef5b25; }
+QLineEdit { background:#2a2a2a; border:1px solid #3a3a3a;
+            border-radius:4px; padding:6px; font-size:15px; }
+QLineEdit:focus { border-color:#4a9eff; }
+QSlider::groove:horizontal { background:#2a2a2a; height:4px; border-radius:2px; }
+QSlider::handle:horizontal { background:#4a9eff; width:12px; height:12px;
+                              margin:-4px 0; border-radius:6px; }
+QSlider::sub-page:horizontal { background:#4a9eff; border-radius:2px; }
+"""
 
 if __name__ == "__main__":
-    App().mainloop()
+    app = QApplication(sys.argv)
+    app.setStyleSheet(_STYLE)
+    w = App()
+    w.show()
+    sys.exit(app.exec())
