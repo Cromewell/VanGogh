@@ -6,6 +6,12 @@ Load a random reference image from a local folder or pull random ones from the w
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![PySide6](https://img.shields.io/badge/PySide6-6.x-green)
 
+## Screenshots
+
+| Launcher | Drawing session |
+|----------|----------------|
+| ![Launcher](menu.png) | ![Session](example.png) |
+
 ## Features
 
 - **Local folders** — recursively scans for JPG, PNG, GIF, BMP, WEBP
