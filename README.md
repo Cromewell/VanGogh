@@ -13,12 +13,12 @@ Load reference images from a local folder or pull random ones from the web, set 
 - **Countdown timer** — presets from 30 s to 30 min, or custom duration
 - **GPU zoom & pan** — smooth zoom with scroll wheel, centered on cursor; double-click to fit/zoom
 - **Flip** — mirror image horizontally
-- **Grid overlay** — thirds grid with pan offset
+- **Grid overlay** — grid with pan offset (you can make grid smaller and bigger)
 - **S/W** — black & white mode
 - **Brightness & contrast** — adjustable via floating panel
 - **Background preloading** — next image loads while you draw
 - **Recent items** — last used folders and keywords are remembered across sessions
-- **Auto-hide controls** — navbar disappears after 3 s of inactivity, stays visible on hover
+- **Auto-hide controls** — navbar disappears after 3s of inactivity, stays visible on hover
 
 ## Requirements
 
