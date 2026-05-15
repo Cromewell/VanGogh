@@ -98,7 +98,7 @@ class CircularTimer(QWidget):
             p.drawArc(r, 90 * 16, int(-360 * frac * 16))
 
         p.setPen(QPen(QColor("#f0f0f0")))
-        p.setFont(QFont("Helvetica", 11, QFont.Bold))
+        p.setFont(QFont("Arial", 11, QFont.Bold))
         m, s = divmod(self.seconds_left, 60)
         p.drawText(self.rect(), Qt.AlignCenter, f"{m:02d}:{s:02d}")
 
@@ -733,7 +733,7 @@ class App(QWidget):
         hdr = QHBoxLayout()
         t = QLabel("VanGogh")
         t.setStyleSheet("font-size:28px; font-weight:bold;")
-        sub = QLabel("Gesture Drawing")
+        sub = QLabel("Drawing Sessions")
         sub.setStyleSheet("font-size:15px; color:#555; padding-top:6px; padding-left:10px;")
         hdr.addWidget(t); hdr.addWidget(sub); hdr.addStretch()
         root.addLayout(hdr)
@@ -904,7 +904,7 @@ class App(QWidget):
 # ── Global stylesheet ─────────────────────────────────────────────────────────
 _STYLE = """
 QWidget { background:#111111; color:#f0f0f0;
-          font-family:"Helvetica","Arial",sans-serif; }
+          font-family:"Helvetica Neue","Helvetica","Arial","Segoe UI",sans-serif; }
 QPushButton { background:#2a2a2a; color:#aaa; border:none;
               border-radius:4px; padding:5px 10px; font-size:15px; }
 QPushButton:hover   { background:#3a3a3a; color:#f0f0f0; }
